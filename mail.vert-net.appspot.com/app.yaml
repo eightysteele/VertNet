@@ -3,6 +3,9 @@ version: mail
 runtime: python
 api_version: 1
 
+inbound_services:
+- mail
+
 handlers:
 - url: /_ah/mail/.+ 
   script: app.py 
