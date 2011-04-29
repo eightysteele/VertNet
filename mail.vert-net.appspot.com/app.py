@@ -64,7 +64,6 @@ def getftdata():
     result = urlfetch.fetch(URL)
     if result.status_code == 200:
         json = result.content.replace('foo(', '').replace(')', '')
-        logging.info(json)
         return simplejson.loads(json)
     
 def getuniques(vals):
@@ -85,7 +84,6 @@ class EmailHandler(InboundMailHandler):
             return
 
         data = getftdata()
-        logging.info(str(data))
         addrs = getuniques(getaddrs(msg.to))
         try:
             addrs += getuniques(getaddrs(msg.cc))
