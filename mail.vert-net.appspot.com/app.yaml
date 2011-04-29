@@ -1,0 +1,11 @@
+application: vert-net
+version: mail
+runtime: python
+api_version: 1
+
+handlers:
+- url: /_ah/mail/.+ 
+  script: app.py 
+  login: admin
+
+    
