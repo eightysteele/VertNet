@@ -46,6 +46,7 @@ COLUMNS = "PersonName, PersonEmail, PersonRole, Birds, Fish, Herps, Mammals"
 SQL = 'SELECT %s FROM %s' % (COLUMNS, FUSION_TABLE_ID)
 PARAMS = urllib.urlencode({'sql': SQL, 'jsonCallback': 'foo'})
 URL = 'http://www.google.com/fusiontables/api/query?%s' % PARAMS
+AUTHORIZED_SENDERS = ['eightysteele@gmail.com', 'gtuco.btuco@gmail.com']
 
 def getaddrs(data):
     """Returns a list of email address names (stuff before the '@').
@@ -80,6 +81,9 @@ def getuniques(vals):
 class EmailHandler(InboundMailHandler):
             
     def receive(self, msg):
+        if msg.sender not in AUTHORIZED_SENDERS:
+            return
+
         data = getftdata()
         logging.info(str(data))
         addrs = getuniques(getaddrs(msg.to))
