@@ -29,9 +29,9 @@ def load(csvfile):
         guid = row['SpecimenGUID']
         cols = row.keys()
         cols.sort()
-        fields = [row[x] for x in cols]
-        # Munges all fields into single line with all whitespace removed:
-        line = re.sub('\s+', '', reduce(lambda x,y: '%s%s' % (x, y), fields))
+        fields = [row[x].strip() for x in cols]
+        # Munges all fields into single line:
+        line = reduce(lambda x,y: '%s%s' % (x, y), fields)
         hashdigest = hashlib.sha224(line).hexdigest()
         c.execute("insert into %s values ('%s', '%s', '')" % (DB_TMP_TABLE, guid, hashdigest))
     conn.commit()

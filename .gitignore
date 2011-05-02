@@ -21,3 +21,7 @@
 .DS_Store
 *.*~
 .#*
+
+# SQLLite db files #
+####################
+*.db
