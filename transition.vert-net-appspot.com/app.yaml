@@ -1,0 +1,16 @@
+application: vert-net
+version: transition
+runtime: python
+api_version: 1
+
+builtins:
+- datastore_admin: on
+ 
+handlers:
+- url: /static
+  static_dir: static
+
+- url: .*
+  script: app.py
+  login: required
+
