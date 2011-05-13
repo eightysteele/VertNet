@@ -1,3 +1,4 @@
+
 #index {
   overflow: hidden;
   margin-bottom: 0;
@@ -14,19 +15,20 @@
   width: 70px;
   padding-top: 10px;
 }
+
 #index div.app, .feed-section div.app {
   font-family: Helvetica, sans-serif;
-  height: 160px;
+  height: 150px;
   width: 150px;
-  padding: 13px 10px;
-  margin: 0 4px;
+  padding: 2px 2px 2px 2px;
+  margin: 0 10px;
   background: -moz-linear-gradient(90deg, #eee, #fff, #eee);
 #  background: -webkit-gradient(linear, left top, left bottom,
 #                               from(#eee), color-stop(0.5, #fff), to(#eee));
   border: 2px solid #e1e1e1;
-  -webkit-border-radius: 10px;
-  -moz-border-radius: 10px;
-  border-radius: 15px;
+  -webkit-border-radius: 85px;
+  -moz-border-radius: 85px;
+  border-radius: 85px;
   -webkit-transition: -webkit-box-shadow 0.10s ease-in-out;
   -moz-transition: all 0.10s ease-in-out;
   -o-transition: all 0.10s ease-in-out;
@@ -34,10 +36,10 @@
 }
 #index div.app:hover,
 #themes a:hover {
-  border-color: ##3D5C9D; #e1e1e1;
-  -webkit-box-shadow: #666 0px 0px 6px;
-  -moz-box-shadow: #666 0px 0px 6px;
-  box-shadow: #666 0px 0px 6px;
+  border-color: #ddd;
+  -webkit-box-shadow: #ddd 0px 0px 6px;
+  -moz-box-shadow: #ddd 0px 0px 6px;
+  box-shadow: #ddd 0px 0px 6px;
   #background: -webkit-gradient(linear, left top, left bottom,
   #                             from(#e1e1e1), color-stop(0.5, #fff), to(#e1e1e1));
   background: -moz-linear-gradient(90deg, #e1e1e1, #fff, #e1e1e1);
@@ -67,7 +69,7 @@
 }
 .app h2 {
   text-transform: uppercase;
-  padding: 0;
+  padding: 10px;
   margin: 0;
   font-weight: bold;
   line-height: 0.8em;
@@ -86,7 +88,7 @@
 .desc { 
   font-size: 13px;
   color: #666;
-  margin-top: 0;
+  
 }
 .fl { float: left; }
 .fr { float: right; }
