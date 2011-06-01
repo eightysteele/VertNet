@@ -81,26 +81,25 @@ def load(csvfile, couchdb_url):
         c.execute(sql % (CACHE_TABLE, recguid, rechash, recjson, docid, '')) 
     conn.commit()
     if len(records) > 0:
-        # Bulkloads docs to CouchDB and sets cache.docrev:
+        # Bulkloads docs to CouchDB and sets first cache.docrev:
         for doc in vertnetdb.update(records):   
-            logging.info('DOC ' + str(doc))
             sql = 'update %s set docrev="%s" where docid="%s"'
             c.execute(sql % (CACHE_TABLE, doc[2], doc[1]))
     conn.commit()
 
     # Handles updated records:
-    sql = "SELECT * FROM %s, %s WHERE %s.recguid = %s.recguid AND %s.rechash <> %s.rechash"
-    updates = c.execute(sql % (TMP_TABLE, CACHE_TABLE, TMP_TABLE, 
-                               CACHE_TABLE, TMP_TABLE, CACHE_TABLE))
+    sql = 'SELECT c.recguid, t.rechash, c.recjson, c.docid, c.docrev FROM %s as t, %s as c WHERE t.recguid = c.recguid AND t.rechash <> c.rechash' % (TMP_TABLE, CACHE_TABLE)
+
+    updates = c.execute(sql)
     records = []
     for row in updates.fetchall():
         recguid = row[0]
-        rechash = row[1]
+        rechash = row[1] # Note: This is the new hash from tmp table.
         recjson = row[2]
-        docid = row[6]
-        docrev = row[7]
-
-        logging.info('UPDATED docid %s' % docid)
+        docid = row[3]
+        docrev = row[4]
+            
+        logging.info('UPDATE docid %s' % docid)
 
         doc = simplejson.loads(recjson)
         doc['_id'] = docid
@@ -112,9 +111,8 @@ def load(csvfile, couchdb_url):
     conn.commit()
     
     if len(records) > 0:
-        # Bulkloads updates to CouchDB and sets cache.docrev:
+        # Bulkloads updates to CouchDB and sets new cache.docrev:
         for doc in vertnetdb.update(records):   
-            logging.info('DOC ' + str(doc))
             sql = 'update %s set docrev="%s" where docid="%s"'
             c.execute(sql % (CACHE_TABLE, doc[2], doc[1]))
     conn.commit()
@@ -123,12 +121,16 @@ def load(csvfile, couchdb_url):
     sql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
     deletes = c.execute(sql % (CACHE_TABLE, TMP_TABLE, TMP_TABLE))
     for row in deletes.fetchall():
-        logging.info(row)
-        uuid = row[2]
-        data = simplejson.loads(row[3])
-        logging.info('DELETED record uuid %s' % uuid)
-        vertnetdb.delete(data)
-        sql = 'delete from %s where uuid="%s"' % (CACHE_TABLE, uuid)
+        recguid = row[0]
+        rechash = row[1]
+        recjson = row[2]
+        docid = row[3]
+        docrev = row[4]
+
+        logging.info('DELETE docid %s' % docid)
+
+        vertnetdb.delete({'_id': docid, '_rev': docrev})
+        sql = 'delete from %s where recguid="%s"' % (CACHE_TABLE, recguid)
         c.execute(sql)
     conn.commit()
 
