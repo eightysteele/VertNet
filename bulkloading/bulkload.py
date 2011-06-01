@@ -94,15 +94,29 @@ def load(csvfile, couchdb_url):
                                CACHE_TABLE, TMP_TABLE, CACHE_TABLE))
     records = []
     for row in updates.fetchall():
-        logging.info('UPDATED ROW ' % row)
-        uuid = row[2]
-        logging.info('UPDATED record uuid %s' % uuid)
-        data = simplejson.loads(row[3])
-        records.append(data)
-        sql = 'update %s set data="%s" where uuid="%s"'
-        c.execute(sql % (CACHE_TABLE, str(data), uuid))        
+        recguid = row[0]
+        rechash = row[1]
+        recjson = row[2]
+        docid = row[6]
+        docrev = row[7]
+
+        logging.info('UPDATED docid %s' % docid)
+
+        doc = simplejson.loads(recjson)
+        doc['_id'] = docid
+        doc['_rev'] = docrev
+        records.append(doc)
+
+        sql = "update %s set rechash='%s', recjson='%s' where docid='%s'"
+        c.execute(sql % (CACHE_TABLE, rechash, recjson, docid))        
+    conn.commit()
+    
     if len(records) > 0:
-        vertnetdb.update(records)
+        # Bulkloads updates to CouchDB and sets cache.docrev:
+        for doc in vertnetdb.update(records):   
+            logging.info('DOC ' + str(doc))
+            sql = 'update %s set docrev="%s" where docid="%s"'
+            c.execute(sql % (CACHE_TABLE, doc[2], doc[1]))
     conn.commit()
 
     # Handles deleted records:
