@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import copy
 import csv
 import hashlib
 import logging
@@ -14,14 +15,29 @@ import couchdb
 from couchdb import Server
 
 DB_FILE = 'bulk.sqlite3.db'
-DB_CACHE_TABLE = 'cache'
-DB_TMP_TABLE = 'tmp'
+CACHE_TABLE = 'cache'
+TMP_TABLE = 'tmp'
 
 def setupdb(conn):
     c = conn.cursor()
-    c.execute('create table if not exists %s (guid text, hash text, uuid text, data text)' % DB_CACHE_TABLE)
-    c.execute('create table if not exists %s (guid text, hash text, uuid text, data text)' % DB_TMP_TABLE)
-    c.execute('delete from %s' % DB_TMP_TABLE)
+    
+    # Creates the cache table:
+    c.execute('create table if not exists ' + CACHE_TABLE + 
+              '(recguid text, ' +
+              'rechash text, ' +
+              'recjson text, ' +
+              'docid text, ' +
+              'docrev text)')
+    
+    # Creates the temporary table:
+    c.execute('create table if not exists ' + TMP_TABLE + 
+              '(recguid text, ' +
+              'rechash text, ' +
+              'recjson text)')
+    
+    # Clears all records from the temporary table:
+    c.execute('delete from %s' % TMP_TABLE)
+
     c.close()
 
 def load(csvfile, couchdb_url):
@@ -34,45 +50,75 @@ def load(csvfile, couchdb_url):
 
     # Inserts csv data into tmp db table:
     for row in dr:
-        guid = row['SpecimenGUID']
-        uuid = uuid4().hex
+        recguid = row['SpecimenGUID']
+        
+        # Creates record hash:
         cols = row.keys()
         cols.sort()
         fields = [row[x].strip() for x in cols]
-        # Munges all fields into single line:
         line = reduce(lambda x,y: '%s%s' % (x, y), fields)
-        hashdigest = hashlib.sha224(line).hexdigest()
-        data = simplejson.dumps(row)
-        sql = "insert into %s values ('%s', '%s', '%s', '%s')"
-        c.execute(sql % (DB_TMP_TABLE, guid, hashdigest, uuid, data))
+        rechash = hashlib.sha224(line).hexdigest()
+
+        recjson = simplejson.dumps(row)
+        sql = "insert into %s values ('%s', '%s', '%s')"
+        c.execute(sql % (TMP_TABLE, recguid, rechash, recjson))
+    conn.commit()
 
     # Handles new records:
-    sql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (guid) WHERE %s.guid is null"
-    new = c.execute(sql % (DB_TMP_TABLE, DB_CACHE_TABLE, DB_CACHE_TABLE))
+    sql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
+    new = c.execute(sql % (TMP_TABLE, CACHE_TABLE, CACHE_TABLE))
+    records = []
     for row in new.fetchall():
-        guid = row[0]
-        hashdigest = row[1]
-        uuid = row[2]
-        data = simplejson.loads(row[3])
-        logging.info('NEW record detected: Saving GUID %s to CouchDB and local cache' % guid)
-        vertnetdb.save(data)
-        sql = 'insert into %s values ("%s", "%s", "%s", "%s")'
-        c.execute(sql % (DB_CACHE_TABLE, guid, hashdigest, uuid, str(data)))
+        recguid = row[0]
+        rechash = row[1]
+        docid = uuid4().hex
+        recjson = row[2]
+        doc = simplejson.loads(recjson)
+        doc['_id'] = docid
+        records.append(doc)
+        logging.info('NEW record docid %s' % docid)
+        sql = "insert into %s values ('%s', '%s', '%s', '%s', '%s')"             
+        c.execute(sql % (CACHE_TABLE, recguid, rechash, recjson, docid, '')) 
+    conn.commit()
+    if len(records) > 0:
+        # Bulkloads docs to CouchDB and sets cache.docrev:
+        for doc in vertnetdb.update(records):   
+            logging.info('DOC ' + str(doc))
+            sql = 'update %s set docrev="%s" where docid="%s"'
+            c.execute(sql % (CACHE_TABLE, doc[2], doc[1]))
+    conn.commit()
 
     # Handles updated records:
-    sql = "SELECT * FROM %s, %s WHERE %s.guid = %s.guid AND %s.hash <> %s.hash"
-    updates = c.execute(sql % (DB_TMP_TABLE, DB_CACHE_TABLE, DB_TMP_TABLE, 
-                               DB_CACHE_TABLE, DB_TMP_TABLE, DB_CACHE_TABLE))
+    sql = "SELECT * FROM %s, %s WHERE %s.recguid = %s.recguid AND %s.rechash <> %s.rechash"
+    updates = c.execute(sql % (TMP_TABLE, CACHE_TABLE, TMP_TABLE, 
+                               CACHE_TABLE, TMP_TABLE, CACHE_TABLE))
+    records = []
     for row in updates.fetchall():
-        logging.info(row)
-        # TODO: Update CouchDb and cache table
+        logging.info('UPDATED ROW ' % row)
+        uuid = row[2]
+        logging.info('UPDATED record uuid %s' % uuid)
+        data = simplejson.loads(row[3])
+        records.append(data)
+        sql = 'update %s set data="%s" where uuid="%s"'
+        c.execute(sql % (CACHE_TABLE, str(data), uuid))        
+    if len(records) > 0:
+        vertnetdb.update(records)
+    conn.commit()
 
     # Handles deleted records:
-    sql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (guid) WHERE %s.guid is null"
-    deletes = c.execute(sql % (DB_CACHE_TABLE, DB_TMP_TABLE, DB_TMP_TABLE))
+    sql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
+    deletes = c.execute(sql % (CACHE_TABLE, TMP_TABLE, TMP_TABLE))
     for row in deletes.fetchall():
         logging.info(row)
-        # TODO: Delete from CouchDb and cache table
+        uuid = row[2]
+        data = simplejson.loads(row[3])
+        logging.info('DELETED record uuid %s' % uuid)
+        vertnetdb.delete(data)
+        sql = 'delete from %s where uuid="%s"' % (CACHE_TABLE, uuid)
+        c.execute(sql)
+    conn.commit()
+
+    conn.close()
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)    
