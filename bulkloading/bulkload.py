@@ -221,7 +221,9 @@ class DeletedRecords(object):
             recguid = row[0]
             docid = row[3]
             docrev = row[4]
-            couch.delete({'_id': docid, '_rev': docrev})
+            doc = {'_id': docid, '_rev': docrev}
+            couch.delete(doc)
+            logging.info(doc)
             logging.info('%s, %s' % (deletesql, recguid))
             cursor.execute(deletesql, (recguid,))
 
