@@ -112,14 +112,14 @@ class NewRecords(object):
     
     def _insertcouch(self, docs, couch, cursor):
         """Bulk inserts docs to couchdb and updates cache table doc revision."""
-        logging.info('Bulk updating %s docs to CouchDB' % len(docs))
+        logging.info('Inserting %s docs to CouchDB' % len(docs))
         sql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
         for doc in couch.update(docs):   
             cursor.execute(sql, (doc[2], doc[1]))
         self.conn.commit()
 
     def execute(self, couch, chunksize):
-        logging.info("Handling new records in CSV")
+        logging.info("Checking for new records")
 
         insertsql = 'insert into %s values (?, ?, ?, ?, ?)' % CACHE_TABLE            
         cursor = self.conn.cursor()
@@ -150,7 +150,7 @@ class NewRecords(object):
             self._insertcouch(docs, couch, cursor)
             
         self.conn.commit()
-        logging.info('Handled %s new records' % totalcount)
+        logging.info('INSERT: %s records inserted' % totalcount)
     
 
 class UpdatedRecords(object):
@@ -160,18 +160,18 @@ class UpdatedRecords(object):
 
     def _insertcouch(self, docs, couch, cursor):
         """Bulk inserts docs to couchdb and updates cache table doc revision."""
-        logging.info('Bulk updating %s docs to CouchDB' % len(docs))
+        logging.info('Updating %s docs to CouchDB' % len(docs))
         sql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
         for doc in couch.update(docs):   
             cursor.execute(sql, (doc[2], doc[1]))
         self.conn.commit()
 
     def execute(self, couch, chunksize):
-        logging.info("Updating records")
+        logging.info("Checking for updated records")
 
         udpatesql = 'update %s set rechash=?, recjson=? where docid=?' % CACHE_TABLE
-        cursor = self.conn.cursor()
         deltasql = 'SELECT c.recguid, t.rechash, c.recjson, c.docid, c.docrev FROM %s as t, %s as c WHERE t.recguid = c.recguid AND t.rechash <> c.rechash' % (TMP_TABLE, CACHE_TABLE)
+        cursor = self.conn.cursor()
         updatedrecs = cursor.execute(deltasql)
         docs = []
         count = 0
@@ -200,8 +200,35 @@ class UpdatedRecords(object):
             self._insertcouch(docs, couch, cursor)
         
         self.conn.commit()
-        logging.info('Handled %s updated records' % totalcount)
 
+        logging.info('UPDATE: %s records updated' % totalcount)
+
+class DeletedRecords(object):
+    def __init__(self, conn):
+        self.conn = conn
+
+    def execute(self, couch):
+        logging.info('Checking for deleted records')
+        
+        deletesql = 'delete from %s where recguid=?' % CACHE_TABLE
+        deltasql = 'SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null'
+        cursor = self.conn.cursor()
+        deletes = cursor.execute(deltasql % (CACHE_TABLE, TMP_TABLE, TMP_TABLE))
+        count = 0
+
+        for row in deletes.fetchall():            
+            count += 1
+            recguid = row[0]
+            docid = row[3]
+            docrev = row[4]
+            couch.delete({'_id': docid, '_rev': docrev})
+            logging.info('%s, %s' % (deletesql, recguid))
+            cursor.execute(deletesql, (recguid,))
+
+        self.conn.commit()
+
+        logging.info('DELETE: %s records deleted' % count)
+        
 def execute(options):
     conn = setupdb()
     chunksize = int(options.chunksize)
@@ -216,28 +243,10 @@ def execute(options):
     # Handles updated records:
     UpdatedRecords(conn).execute(couch, chunksize)
 
-def load(options):
-
     # Handles deleted records:
-    logging.info('Checking for deleted records')
-    sql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
-    deletes = c.execute(sql % (CACHE_TABLE, TMP_TABLE, TMP_TABLE))
-    for row in deletes.fetchall():
-        recguid = row[0]
-        rechash = row[1]
-        recjson = row[2]
-        docid = row[3]
-        docrev = row[4]
-
-        logging.info('DELETE docid %s' % docid)
-
-        vertnetdb.delete({'_id': docid, '_rev': docrev})
-        sql = 'delete from %s where recguid=?' % CACHE_TABLE
-        c.execute(sql, (recguid))
-    conn.commit()
+    DeletedRecords(conn).execute(couch)
 
     conn.close()
-
 
 
 if __name__ == '__main__':
