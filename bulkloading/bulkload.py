@@ -77,7 +77,7 @@ class TmpTable(object):
             yield (recguid, rechash, recjson)
         
     def _insertchunk(self, rows, cursor):
-        print '.' # For showing progress
+        logging.info('%s prepared' % self.totalcount)
         cursor.executemany(self.insertsql, self._rowgenerator(rows))
         self.conn.commit()
         
@@ -86,15 +86,15 @@ class TmpTable(object):
 
         rows = []
         count = 0
-        totalcount = 0
+        self.totalcount = 0
         chunkcount = 0
         cursor = self.conn.cursor()
         reader = csv.DictReader(open(csvfile, 'r'), skipinitialspace=True)
 
         for row in reader:
             if count >= chunksize:
+                self.totalcount += count
                 self._insertchunk(rows, cursor)
-                totalcount += count
                 count = 0
                 rows = []        
                 chunkcount += 1
@@ -102,10 +102,10 @@ class TmpTable(object):
             count += 1
 
         if count > 0:
-            totalcount += count
+            self.totalcount += count
             self._insertchunk(rows, cursor)
 
-        logging.info('%s rows inserted to tmp table' % totalcount)
+        logging.info('%s rows inserted to tmp table' % self.totalcount)
  
 
 class NewRecords(object):
@@ -116,13 +116,19 @@ class NewRecords(object):
         self.insertsql = 'insert into %s values (?, ?, ?, ?, ?)' % CACHE_TABLE            
         self.updatesql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
         self.deltasql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
+        self.totalcount = 0
     
     def _insertchunk(self, cursor, recs, docs):
-        print '.' # For showing progress
-        cursor.executemany(self.insertsql, recs)
-        self.conn.commit()
-        updates = [(doc[2], doc[1]) for doc in self.couch.update(docs)]
-        cursor.executemany(self.updatesql, updates)
+        logging.info('%s inserted' % self.totalcount)
+        #cursor.executemany(self.insertsql, recs)
+        #self.conn.commit()
+        bulk = []
+        index = 0
+        for doc in self.couch.update(docs):
+            bulk.append((recs[index]) + (doc[2],))
+            index += 1
+        #recs = [(doc[2], doc[1]) for doc in self.couch.update(docs)]
+        cursor.executemany(self.insertsql, bulk)
         self.conn.commit()
         
     def execute(self, chunksize):
@@ -133,12 +139,12 @@ class NewRecords(object):
         docs = []
         recs = []
         count = 0
-        totalcount = 0
+        self.totalcount = 0
 
         for row in newrecs.fetchall():
             if count >= chunksize:
+                self.totalcount += count
                 self._insertchunk(cursor, recs, docs)
-                totalcount += count
                 count = 0
                 recs = []
                 docs = []
@@ -150,14 +156,14 @@ class NewRecords(object):
             doc = simplejson.loads(recjson)
             doc['_id'] = docid
             docs.append(doc)
-            recs.append((recguid, rechash, recjson, docid, ''))
+            recs.append((recguid, rechash, recjson, docid))
 
         if count > 0:
-            totalcount += count
+            self.totalcount += count
             self._insertchunk(cursor, recs, docs)
 
         self.conn.commit()
-        logging.info('INSERT: %s records inserted' % totalcount)
+        logging.info('INSERT: %s records inserted' % self.totalcount)
     
 
 class UpdatedRecords(object):
@@ -171,7 +177,7 @@ class UpdatedRecords(object):
 
     def _updatechunk(self, cursor, recs, docs):
         """Bulk inserts docs to couchdb and updates cache table doc revision."""
-        print '.' # For showing progress
+        logging.info('%s updated' % self.totalcount)
         cursor.executemany(self.updatesql, recs)
         self.conn.commit()
         updates = [(doc[2], doc[1]) for doc in self.couch.update(docs)]
@@ -186,12 +192,12 @@ class UpdatedRecords(object):
         docs = []
         recs = []
         count = 0
-        totalcount = 0
+        self.totalcount = 0
 
         for row in updatedrecs.fetchall():
             if count >= chunksize:
                 self._updatechunk(cursor, recs, docs)
-                totalcount += count
+                self.totalcount += count
                 count = 0
                 docs = []
                 recs = []
@@ -208,12 +214,12 @@ class UpdatedRecords(object):
             recs.append((rechash, recjson, docid))
         
         if count > 0:
-            totalcount += count
+            self.totalcount += count
             self._updatechunk(cursor, recs, docs)
         
         self.conn.commit()
 
-        logging.info('UPDATE: %s records updated' % totalcount)
+        logging.info('UPDATE: %s records updated' % self.totalcount)
 
 class DeletedRecords(object):
     def __init__(self, conn, couch):
@@ -224,7 +230,7 @@ class DeletedRecords(object):
             % (CACHE_TABLE, TMP_TABLE, TMP_TABLE)
 
     def _deletechunk(self, cursor, recs, docs):
-        print '.' # For showing progress
+        logging.info('%s deleted' % self.totalcount)
         cursor.executemany(self.deletesql, recs)
         self.conn.commit()
         for doc in docs:
@@ -236,14 +242,14 @@ class DeletedRecords(object):
         cursor = self.conn.cursor()
         deletes = cursor.execute(self.deltasql)
         count = 0
-        totalcount = 0
+        self.totalcount = 0
         docs = []
         recs = []
 
         for row in deletes.fetchall():            
             if count >= chunksize:
                 self._deletechunk(cursor, recs, docs)
-                totalcount += count
+                self.totalcount += count
                 count = 0
                 docs = []
                 recs = []
@@ -256,12 +262,12 @@ class DeletedRecords(object):
             docs.append(doc)
         
         if count > 0:
-            totalcount += count
+            self.totalcount += count
             self._deletechunk(cursor, recs, docs)
 
         self.conn.commit()
 
-        logging.info('DELETE: %s records deleted' % totalcount)
+        logging.info('DELETE: %s records deleted' % self.totalcount)
         
 def execute(options):
     conn = setupdb()
