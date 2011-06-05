@@ -8,6 +8,9 @@ from optparse import OptionParser
 import re
 import simplejson
 import sqlite3
+import threading
+import time
+from threading import Thread
 from uuid import uuid4
 
 # CouchDB imports
@@ -18,7 +21,7 @@ CACHE_TABLE = 'cache'
 TMP_TABLE = 'tmp'
 
 def setupdb():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
     c = conn.cursor()
     
     # Creates the cache table:
@@ -56,18 +59,13 @@ def tmprecgen(seq):
 
         yield(recguid, rechash, recjson)
 
-
-
 class TmpTable(object):
     def __init__(self, conn):
-        self.table = 'tmp'
         self.conn = conn
+        self.table = 'tmp'
+        self.insertsql = 'insert into %s values (?, ?, ?)' % self.table
 
-    def _insertchunk(self, rows, cursor):
-        logging.info('Inserting %s records to tmp table.' % len(rows))
-
-        sql = 'insert into %s values (?, ?, ?)' % self.table
-
+    def _rowgenerator(self, rows):
         for row in rows:
             recguid = row['occurrenceID']
             cols = row.keys()
@@ -76,8 +74,11 @@ class TmpTable(object):
             line = reduce(lambda x,y: '%s%s' % (x, y), fields)
             rechash = hashlib.sha224(line).hexdigest()
             recjson = simplejson.dumps(row)
-            cursor.execute(sql, (recguid, rechash, recjson))
-
+            yield (recguid, rechash, recjson)
+        
+    def _insertchunk(self, rows, cursor):
+        print '.' # For showing progress
+        cursor.executemany(self.insertsql, self._rowgenerator(rows))
         self.conn.commit()
         
     def insert(self, csvfile, chunksize):
@@ -86,6 +87,7 @@ class TmpTable(object):
         rows = []
         count = 0
         totalcount = 0
+        chunkcount = 0
         cursor = self.conn.cursor()
         reader = csv.DictReader(open(csvfile, 'r'), skipinitialspace=True)
 
@@ -95,6 +97,7 @@ class TmpTable(object):
                 totalcount += count
                 count = 0
                 rows = []        
+                chunkcount += 1
             rows.append(row)
             count += 1
 
@@ -104,36 +107,40 @@ class TmpTable(object):
 
         logging.info('%s rows inserted to tmp table' % totalcount)
  
-    
+
 class NewRecords(object):
 
-    def __init__(self, conn):
+    def __init__(self, conn, couch):
         self.conn = conn
+        self.couch = couch
+        self.insertsql = 'insert into %s values (?, ?, ?, ?, ?)' % CACHE_TABLE            
+        self.updatesql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
+        self.deltasql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
     
-    def _insertcouch(self, docs, couch, cursor):
-        """Bulk inserts docs to couchdb and updates cache table doc revision."""
-        logging.info('Inserting %s docs to CouchDB' % len(docs))
-        sql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
-        for doc in couch.update(docs):   
-            cursor.execute(sql, (doc[2], doc[1]))
+    def _insertchunk(self, cursor, recs, docs):
+        print '.' # For showing progress
+        cursor.executemany(self.insertsql, recs)
         self.conn.commit()
-
-    def execute(self, couch, chunksize):
+        updates = [(doc[2], doc[1]) for doc in self.couch.update(docs)]
+        cursor.executemany(self.updatesql, updates)
+        self.conn.commit()
+        
+    def execute(self, chunksize):
         logging.info("Checking for new records")
 
-        insertsql = 'insert into %s values (?, ?, ?, ?, ?)' % CACHE_TABLE            
         cursor = self.conn.cursor()
-        deltasql = "SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null"
-        newrecs = cursor.execute(deltasql % (TMP_TABLE, CACHE_TABLE, CACHE_TABLE))
+        newrecs = cursor.execute(self.deltasql % (TMP_TABLE, CACHE_TABLE, CACHE_TABLE))
         docs = []
+        recs = []
         count = 0
         totalcount = 0
 
         for row in newrecs.fetchall():
             if count >= chunksize:
-                self._insertcouch(docs, couch, cursor)
+                self._insertchunk(cursor, recs, docs)
                 totalcount += count
                 count = 0
+                recs = []
                 docs = []
             count += 1
             recguid = row[0]
@@ -143,46 +150,51 @@ class NewRecords(object):
             doc = simplejson.loads(recjson)
             doc['_id'] = docid
             docs.append(doc)
-            cursor.execute(insertsql, (recguid, rechash, recjson, docid, ''))
+            recs.append((recguid, rechash, recjson, docid, ''))
 
         if count > 0:
             totalcount += count
-            self._insertcouch(docs, couch, cursor)
-            
+            self._insertchunk(cursor, recs, docs)
+
         self.conn.commit()
         logging.info('INSERT: %s records inserted' % totalcount)
     
 
 class UpdatedRecords(object):
 
-    def __init__(self, conn):
+    def __init__(self, conn, couch):
         self.conn = conn
+        self.couch = couch
+        self.updatedocrevsql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
+        self.updatesql = 'update %s set rechash=?, recjson=? where docid=?' % CACHE_TABLE
+        self.deltasql = 'SELECT c.recguid, t.rechash, c.recjson, c.docid, c.docrev FROM %s as t, %s as c WHERE t.recguid = c.recguid AND t.rechash <> c.rechash' % (TMP_TABLE, CACHE_TABLE)
 
-    def _insertcouch(self, docs, couch, cursor):
+    def _updatechunk(self, cursor, recs, docs):
         """Bulk inserts docs to couchdb and updates cache table doc revision."""
-        logging.info('Updating %s docs to CouchDB' % len(docs))
-        sql = 'update %s set docrev=? where docid=?' % CACHE_TABLE
-        for doc in couch.update(docs):   
-            cursor.execute(sql, (doc[2], doc[1]))
+        print '.' # For showing progress
+        cursor.executemany(self.updatesql, recs)
+        self.conn.commit()
+        updates = [(doc[2], doc[1]) for doc in self.couch.update(docs)]
+        cursor.executemany(self.updatedocrevsql, updates)
         self.conn.commit()
 
-    def execute(self, couch, chunksize):
+    def execute(self, chunksize):
         logging.info("Checking for updated records")
 
-        udpatesql = 'update %s set rechash=?, recjson=? where docid=?' % CACHE_TABLE
-        deltasql = 'SELECT c.recguid, t.rechash, c.recjson, c.docid, c.docrev FROM %s as t, %s as c WHERE t.recguid = c.recguid AND t.rechash <> c.rechash' % (TMP_TABLE, CACHE_TABLE)
         cursor = self.conn.cursor()
-        updatedrecs = cursor.execute(deltasql)
+        updatedrecs = cursor.execute(self.deltasql)
         docs = []
+        recs = []
         count = 0
         totalcount = 0
 
         for row in updatedrecs.fetchall():
             if count >= chunksize:
-                self._insertcouch(docs, couch, cursor)
+                self._updatechunk(cursor, recs, docs)
                 totalcount += count
                 count = 0
                 docs = []
+                recs = []
             count += 1
             recguid = row[0]
             rechash = row[1] # Note: This is the new hash from tmp table.
@@ -193,43 +205,63 @@ class UpdatedRecords(object):
             doc['_id'] = docid
             doc['_rev'] = docrev
             docs.append(doc)
-            cursor.execute(udpatesql, (rechash, recjson, docid))        
+            recs.append((rechash, recjson, docid))
         
         if count > 0:
             totalcount += count
-            self._insertcouch(docs, couch, cursor)
+            self._updatechunk(cursor, recs, docs)
         
         self.conn.commit()
 
         logging.info('UPDATE: %s records updated' % totalcount)
 
 class DeletedRecords(object):
-    def __init__(self, conn):
+    def __init__(self, conn, couch):
         self.conn = conn
+        self.couch = couch
+        self.deletesql = 'delete from %s where recguid=?' % CACHE_TABLE
+        self.deltasql = 'SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null' \
+            % (CACHE_TABLE, TMP_TABLE, TMP_TABLE)
 
-    def execute(self, couch):
+    def _deletechunk(self, cursor, recs, docs):
+        print '.' # For showing progress
+        cursor.executemany(self.deletesql, recs)
+        self.conn.commit()
+        for doc in docs:
+            self.couch.delete(doc)
+        
+    def execute(self, chunksize):
         logging.info('Checking for deleted records')
         
-        deletesql = 'delete from %s where recguid=?' % CACHE_TABLE
-        deltasql = 'SELECT * FROM %s LEFT OUTER JOIN %s USING (recguid) WHERE %s.recguid is null'
         cursor = self.conn.cursor()
-        deletes = cursor.execute(deltasql % (CACHE_TABLE, TMP_TABLE, TMP_TABLE))
+        deletes = cursor.execute(self.deltasql)
         count = 0
+        totalcount = 0
+        docs = []
+        recs = []
 
         for row in deletes.fetchall():            
+            if count >= chunksize:
+                self._deletechunk(cursor, recs, docs)
+                totalcount += count
+                count = 0
+                docs = []
+                recs = []
             count += 1
             recguid = row[0]
+            recs.append((recguid,))
             docid = row[3]
             docrev = row[4]
             doc = {'_id': docid, '_rev': docrev}
-            couch.delete(doc)
-            logging.info(doc)
-            logging.info('%s, %s' % (deletesql, recguid))
-            cursor.execute(deletesql, (recguid,))
+            docs.append(doc)
+        
+        if count > 0:
+            totalcount += count
+            self._deletechunk(cursor, recs, docs)
 
         self.conn.commit()
 
-        logging.info('DELETE: %s records deleted' % count)
+        logging.info('DELETE: %s records deleted' % totalcount)
         
 def execute(options):
     conn = setupdb()
@@ -240,13 +272,13 @@ def execute(options):
     TmpTable(conn).insert(options.csvfile, chunksize)
 
     # Handles new records:
-    NewRecords(conn).execute(couch, chunksize)
+    NewRecords(conn, couch).execute(chunksize)
 
     # Handles updated records:
-    UpdatedRecords(conn).execute(couch, chunksize)
+    UpdatedRecords(conn, couch).execute(chunksize)
 
     # Handles deleted records:
-    DeletedRecords(conn).execute(couch)
+    DeletedRecords(conn, couch).execute(chunksize)
 
     conn.close()
 
