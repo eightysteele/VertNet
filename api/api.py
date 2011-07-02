@@ -40,9 +40,11 @@ class DarwinCoreIndex(model.Expando): # parent=DarwinCore
 
     @classmethod
     def search(cls, args):
-        qry = DarwinCoreIndex.query()
+        gql = 'SELECT * FROM DarwinCoreIndex WHERE'
         for k,v in args.iteritems():
-            qry = qry.filter(DarwinCoreIndex. == v)
+            gql = "%s %s='%s' AND " % (gql, k, v)
+        gql = gql[:-5] # Removes trailing AND
+        qry = query.parse_gql(gql)[0]
         return model.get_multi([x.parent() for x in qry.fetch(keys_only=True)])
 
 class DarwinCoreFullTextIndex(model.Model): # parent=DarwinCore
@@ -89,6 +91,7 @@ class ApiHandler(BaseHandler):
             results = DarwinCoreFullTextIndex.search(keywords)
         else:
             args = dict((name, self.request.get(name)) for name in self.request.arguments())
+            logging.info(args)
             results = DarwinCoreIndex.search(args)
         self.response.headers["Content-Type"] = "application/json"
         self.response.out.write(simplejson.dumps([simplejson.loads(x.record) for x in results]))        
