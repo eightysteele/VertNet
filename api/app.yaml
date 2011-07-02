@@ -1,0 +1,19 @@
+application: vert-net
+version: api-dev
+runtime: python
+api_version: 1
+
+builtins:
+- datastore_admin: on
+
+handlers:
+
+- url: /api/.*
+  script: api.py
+  
+- url: /admin/.*
+  script: api.py
+  login: admin
+
+- url: /.*
+  script: api.py
