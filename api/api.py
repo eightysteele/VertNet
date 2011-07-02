@@ -34,8 +34,8 @@ class DarwinCoreIndex(model.Expando): # parent=DarwinCore
     def create(cls, rec):
         parent = model.Key(DarwinCore, rec['occurrenceid'])
         dci = DarwinCoreIndex(parent=parent)        
-        for key in rec.keys():
-            dci.__setattr__(key, rec.get(key))
+        for key,value in rec.iteritems():
+            dci.__setattr__(key, value.lower())
         return dci
 
     @classmethod
@@ -50,6 +50,7 @@ class DarwinCoreIndex(model.Expando): # parent=DarwinCore
 class DarwinCoreFullTextIndex(model.Model): # parent=DarwinCore
     """Contains the full text of a Darwin Core record."""
     corpus = model.StringProperty('c', repeated=True)
+
     @classmethod
     def create(cls, rec):
         parent = model.Key(DarwinCore, rec['occurrenceid'])
@@ -90,7 +91,7 @@ class ApiHandler(BaseHandler):
             keywords = [x.lower() for x in q.split(',')]
             results = DarwinCoreFullTextIndex.search(keywords)
         else:
-            args = dict((name, self.request.get(name)) for name in self.request.arguments())
+            args = dict((name, self.request.get(name).lower().strip()) for name in self.request.arguments())
             logging.info(args)
             results = DarwinCoreIndex.search(args)
         self.response.headers["Content-Type"] = "application/json"
@@ -105,8 +106,7 @@ class LoadTestData(BaseHandler):
             model.put_multi([
                     DarwinCore.create(rec),
                     DarwinCoreIndex.create(rec),
-                    DarwinCoreFullTextIndex.create(rec),
-                    DarwinCoreSimpleIndex.create(rec)])
+                    DarwinCoreFullTextIndex.create(rec)])
             
 application = webapp.WSGIApplication(
          [('/load', LoadTestData),
