@@ -4,6 +4,7 @@ from google.appengine.ext.webapp import template
 from google.appengine.ext.webapp.util import run_wsgi_app
 from google.appengine.api import users
 from google.appengine.api import taskqueue
+from google.appengine.ext.webapp.util import login_required
 
 from ndb import model
 from ndb import query
@@ -144,7 +145,8 @@ class ApiHandler(BaseHandler):
 class LoadTestData(BaseHandler):
     def post(self):
         self.get()
-
+        
+    @login_required
     def get(self):
         pkey = Publisher.create('Museum of Vertebrate Zoology').put()
         ckey = Collection.create('Birds', pkey).put()
