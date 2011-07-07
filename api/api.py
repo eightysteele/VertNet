@@ -1,7 +1,9 @@
+from google.appengine.ext import deferred
 from google.appengine.ext import webapp
 from google.appengine.ext.webapp import template
 from google.appengine.ext.webapp.util import run_wsgi_app
 from google.appengine.api import users
+from google.appengine.api import taskqueue
 
 from ndb import model
 from ndb import query
@@ -29,7 +31,10 @@ class DarwinCore(model.Model):
             record=simplejson.dumps(rec))
     
 class DarwinCoreIndex(model.Expando): # parent=DarwinCore
-    """Contains indexed properties for all concepts in the parent DarwinCore.record."""
+    """Index relation for DarwinCore."""
+
+    corpus = model.StringProperty('c', repeated=True) # full text
+
     @classmethod
     def create(cls, rec):
         parent = model.Key(DarwinCore, rec['occurrenceid'])
@@ -39,37 +44,35 @@ class DarwinCoreIndex(model.Expando): # parent=DarwinCore
         return dci
 
     @classmethod
-    def search(cls, args):
+    def search(cls, args, keywords=[]):
         gql = 'SELECT * FROM DarwinCoreIndex WHERE'
         for k,v in args.iteritems():
             gql = "%s %s='%s' AND " % (gql, k, v)
         gql = gql[:-5] # Removes trailing AND
         qry = query.parse_gql(gql)[0]
+        for keyword in keywords:
+            qry = qry.filter(DarwinCoreIndex.corpus == keyword)        
         return model.get_multi([x.parent() for x in qry.fetch(keys_only=True)])
 
-class DarwinCoreFullTextIndex(model.Model): # parent=DarwinCore
-    """Contains the full text of a Darwin Core record."""
-    corpus = model.StringProperty('c', repeated=True)
-
     @classmethod
-    def create(cls, rec):
-        parent = model.Key(DarwinCore, rec['occurrenceid'])
-        logging.info(str(rec))
+    def getcorpus(cls, rec):
         corpus = set([x.strip().lower() for x in rec.values()]) # verbatim values lower case
         corpus.update(
             reduce(lambda x,y: x+y, 
                    map(lambda x: [s.strip().lower() for s in x.split() if s], rec.values()))) # adds tokenized values
-        logging.info(str(corpus))
-        return DarwinCoreFullTextIndex(parent=parent, corpus=list(corpus))
+        return list(corpus)
     
-    @classmethod
-    def search(cls, keywords):
-        qry = DarwinCoreFullTextIndex.query()
-        for keyword in keywords:
-            qry = qry.filter(DarwinCoreFullTextIndex.corpus == keyword)
-        logging.info(str(qry))
-        return model.get_multi([x.parent() for x in qry.fetch(keys_only=True)])
-    
+# ------------------------------------------------------------------------------
+# Map Reduce
+
+def delete_DarwinCore(entity):
+    entity.key().delete()
+
+def delete_DarwinCoreIndex(entity):
+    entity.key().delete()
+
+def delete_DarwinCoreFullTextIndex(entity):
+    entity.key().delete()
 
 # ------------------------------------------------------------------------------
 # Handlers
@@ -83,7 +86,6 @@ class BaseHandler(webapp.RequestHandler):
         path = os.path.join(os.path.dirname(__file__), "../../html", file)
         self.response.out.write(open(path, 'r').read())
 
-
 class ApiHandler(BaseHandler):
     def get(self):
         q = self.request.get('q', None)
@@ -92,22 +94,39 @@ class ApiHandler(BaseHandler):
             results = DarwinCoreFullTextIndex.search(keywords)
         else:
             args = dict((name, self.request.get(name).lower().strip()) for name in self.request.arguments())
-            logging.info(args)
             results = DarwinCoreIndex.search(args)
         self.response.headers["Content-Type"] = "application/json"
         self.response.out.write(simplejson.dumps([simplejson.loads(x.record) for x in results]))        
 
 class LoadTestData(BaseHandler):
+    def post(self):
+        self.get()
+
     def get(self):
+        start = int(self.request.get('start'))
+        size = int(self.request.get('size'))
+        logging.info('start=%s, size=%s' % (start, size))
+        count = -1
+        created = 0
         path = os.path.join(os.path.dirname(__file__), 'data.csv')
         reader = csv.DictReader(open(path, 'r'), skipinitialspace=True)
+        dc = []
+        dci = []
+
+        while start >= 0:
+            reader.next()
+            start -= 1
+
         for rec in reader:
+            if created == size:
+                model.put_multi(dc)
+                model.put_multi(dci)
             rec = dict((k.lower(), v) for k,v in rec.iteritems()) # lowercase all keys
-            model.put_multi([
-                    DarwinCore.create(rec),
-                    DarwinCoreIndex.create(rec),
-                    DarwinCoreFullTextIndex.create(rec)])
-            
+            dc.append(DarwinCore.create(rec))
+            dci.append(DarwinCoreIndex.create(rec))
+            created += 1
+        self.response.out.write('Done. Created %s records' % created)
+
 application = webapp.WSGIApplication(
          [('/load', LoadTestData),
           ('/api/search', ApiHandler),
