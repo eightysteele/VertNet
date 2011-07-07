@@ -18,40 +18,83 @@ import simplejson
 # ------------------------------------------------------------------------------
 # Models
 
-class DarwinCore(model.Model):
-    owner = model.UserProperty('u', required=True)
-    record = model.TextProperty('r', required=True) # json
+def urlname(name):
+    return '-'.join(''.join(ch for ch in word if ch.isalnum()) \
+                        for word in name.split())
+
+class Publisher(model.Model): # key_name=urlname
+    """Model for a VertNet data Publisher."""
+    name = model.StringProperty('n', required=True)
+    urlname = model.ComputedProperty(lambda self: urlname(self.name))
+    owner = model.UserProperty('o', required=True)
+    admins = model.UserProperty('a', repeated=True)
     created = model.DateTimeProperty('c', auto_now_add=True)
     updated = model.DateTimeProperty('u', auto_now=True)
+
     @classmethod
-    def create(cls, rec):
-        return DarwinCore(
+    def create(cls, name):
+        return Publisher(
+            id=urlname(name),
+            name=name,
+            owner=users.get_current_user())            
+
+class Collection(model.Model): # key_name=urlname, parent=Publisher
+    """Model for a collection of records."""
+    name = model.StringProperty('n', required=True)
+    urlname = model.ComputedProperty(lambda self: urlname(self.name))
+    owner = model.UserProperty('o', required=True)
+    admins = model.UserProperty('a', repeated=True)
+    created = model.DateTimeProperty('c', auto_now_add=True)
+    updated = model.DateTimeProperty('u', auto_now=True)
+
+    @classmethod
+    def create(cls, name, publisher_key):
+        return Collection(
+            parent=publisher_key,
+            id=urlname(name),
+            name=name,
+            owner=users.get_current_user())            
+    
+class Record(model.Model): # key_name=record.occurrenceid, parent=Collection
+    """Model for a record."""
+    owner = model.UserProperty('u', required=True)
+    record = model.TextProperty('r', required=True) # darwin core json representation
+    created = model.DateTimeProperty('c', auto_now_add=True)
+    updated = model.DateTimeProperty('u', auto_now=True)
+
+    @classmethod
+    def create(cls, rec, collection_key):
+        return Record(            
+            parent=collection_key,
             id=rec['occurrenceid'],
             owner=users.get_current_user(),
             record=simplejson.dumps(rec))
     
-class DarwinCoreIndex(model.Expando): # parent=DarwinCore
-    """Index relation for DarwinCore."""
+class RecordIndex(model.Expando): # parent=Record
+    """Index relation for Record."""
 
     corpus = model.StringProperty('c', repeated=True) # full text
 
     @classmethod
-    def create(cls, rec):
-        parent = model.Key(DarwinCore, rec['occurrenceid'])
-        dci = DarwinCoreIndex(parent=parent)        
-        for key,value in rec.iteritems():
-            dci.__setattr__(key, value.lower())
-        return dci
+    def create(cls, rec, collection_key):
+        key = model.Key(
+            'RecordIndex', 
+            rec['occurrenceid'], 
+            parent=model.Key('Record', rec['occurrenceid'], parent=collection_key))
+        index = RecordIndex(key=key, corpus=cls.getcorpus(rec))
+        for concept,value in rec.iteritems():
+            index.__setattr__(concept, value.lower())
+        return index
 
     @classmethod
     def search(cls, args, keywords=[]):
-        gql = 'SELECT * FROM DarwinCoreIndex WHERE'
+        gql = 'SELECT * FROM RecordIndex WHERE'
         for k,v in args.iteritems():
             gql = "%s %s='%s' AND " % (gql, k, v)
         gql = gql[:-5] # Removes trailing AND
         qry = query.parse_gql(gql)[0]
         for keyword in keywords:
-            qry = qry.filter(DarwinCoreIndex.corpus == keyword)        
+            qry = qry.filter(RecordIndex.corpus == keyword)        
         return model.get_multi([x.parent() for x in qry.fetch(keys_only=True)])
 
     @classmethod
@@ -65,13 +108,13 @@ class DarwinCoreIndex(model.Expando): # parent=DarwinCore
 # ------------------------------------------------------------------------------
 # Map Reduce
 
-def delete_DarwinCore(entity):
+def delete_Record(entity):
     entity.key().delete()
 
-def delete_DarwinCoreIndex(entity):
+def delete_RecordIndex(entity):
     entity.key().delete()
 
-def delete_DarwinCoreFullTextIndex(entity):
+def delete_RecordFullTextIndex(entity):
     entity.key().delete()
 
 # ------------------------------------------------------------------------------
@@ -91,10 +134,10 @@ class ApiHandler(BaseHandler):
         q = self.request.get('q', None)
         if q:
             keywords = [x.lower() for x in q.split(',')]
-            results = DarwinCoreFullTextIndex.search(keywords)
+            results = RecordFullTextIndex.search(keywords)
         else:
             args = dict((name, self.request.get(name).lower().strip()) for name in self.request.arguments())
-            results = DarwinCoreIndex.search(args)
+            results = RecordIndex.search(args)
         self.response.headers["Content-Type"] = "application/json"
         self.response.out.write(simplejson.dumps([simplejson.loads(x.record) for x in results]))        
 
@@ -103,6 +146,9 @@ class LoadTestData(BaseHandler):
         self.get()
 
     def get(self):
+        pkey = Publisher.create('Museum of Vertebrate Zoology').put()
+        ckey = Collection.create('Birds', pkey).put()
+
         start = int(self.request.get('start'))
         size = int(self.request.get('size'))
         logging.info('start=%s, size=%s' % (start, size))
@@ -122,8 +168,8 @@ class LoadTestData(BaseHandler):
                 model.put_multi(dc)
                 model.put_multi(dci)
             rec = dict((k.lower(), v) for k,v in rec.iteritems()) # lowercase all keys
-            dc.append(DarwinCore.create(rec))
-            dci.append(DarwinCoreIndex.create(rec))
+            dc.append(Record.create(rec, ckey))
+            dci.append(RecordIndex.create(rec, ckey))
             created += 1
         self.response.out.write('Done. Created %s records' % created)
 
