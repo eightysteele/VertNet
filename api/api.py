@@ -14,6 +14,8 @@ import logging
 import os
 import simplejson
 
+appid = os.environ['APPLICATION_ID']
+appver = os.environ['CURRENT_VERSION_ID'].split('.')[0]
 
 
 # ------------------------------------------------------------------------------
@@ -31,13 +33,24 @@ class Publisher(model.Model): # key_name=urlname
     admins = model.UserProperty('a', repeated=True)
     created = model.DateTimeProperty('c', auto_now_add=True)
     updated = model.DateTimeProperty('u', auto_now=True)
+    json = model.TextProperty('j', required=True) # JSON representation
 
     @classmethod
     def create(cls, name):
         return Publisher(
             id=urlname(name),
             name=name,
-            owner=users.get_current_user())            
+            owner=users.get_current_user(),
+            json=simplejson.dumps(dict(
+                    url='http://%s.%s.appspot.com/publishers/%s' % \
+                        (appver, appid, urlname(name)),
+                    name=name,
+                    admin=users.get_current_user().nickname())))     
+
+    @classmethod
+    def get_by_urlname(cls, urlname):
+        return model.Key('Publisher', urlname).get()
+
 
 class Collection(model.Model): # key_name=urlname, parent=Publisher
     """Model for a collection of records."""
@@ -47,6 +60,7 @@ class Collection(model.Model): # key_name=urlname, parent=Publisher
     admins = model.UserProperty('a', repeated=True)
     created = model.DateTimeProperty('c', auto_now_add=True)
     updated = model.DateTimeProperty('u', auto_now=True)
+    json = model.TextProperty('j', required=True) # JSON representation
 
     @classmethod
     def create(cls, name, publisher_key):
@@ -54,7 +68,20 @@ class Collection(model.Model): # key_name=urlname, parent=Publisher
             parent=publisher_key,
             id=urlname(name),
             name=name,
-            owner=users.get_current_user())            
+            owner=users.get_current_user(),
+            json=simplejson.dumps(dict(
+                    name=name,
+                    admin=users.get_current_user().nickname(),
+                    url='http://%s.%s.appspot.com/publishers/%s/%s' % \
+                        (appver, appid, publisher_key.id(), urlname(name))))) 
+
+    @classmethod
+    def get_by_urlname(cls, urlname, publisher_key):
+        return model.Key('Collection', urlname, parent=publisher_key).get()
+
+    @classmethod
+    def all_by_publisher(cls, publisher_key):
+        return Collection.query(ancestor=publisher_key).fetch()
     
 class Record(model.Model): # key_name=record.occurrenceid, parent=Collection
     """Model for a record."""
@@ -70,6 +97,10 @@ class Record(model.Model): # key_name=record.occurrenceid, parent=Collection
             id=rec['occurrenceid'],
             owner=users.get_current_user(),
             record=simplejson.dumps(rec))
+
+    @classmethod
+    def all_by_collection(cls, collection_key):
+        return Record.query(ancestor=collection_key).fetch()
     
 class RecordIndex(model.Expando): # parent=Record
     """Index relation for Record."""
@@ -103,10 +134,12 @@ class RecordIndex(model.Expando): # parent=Record
 
     @classmethod
     def getcorpus(cls, rec):
-        corpus = set([x.strip().lower() for x in rec.values()]) # verbatim values lower case
+        # verbatim values lower case
+        corpus = set([x.strip().lower() for x in rec.values()]) 
         corpus.update(
             reduce(lambda x,y: x+y, 
-                   map(lambda x: [s.strip().lower() for s in x.split() if s], rec.values()))) # adds tokenized values
+                   map(lambda x: [s.strip().lower() for s in x.split() if s], 
+                       rec.values()))) # adds tokenized values
         return list(corpus)
     
 # ------------------------------------------------------------------------------
@@ -135,11 +168,14 @@ class BaseHandler(webapp.RequestHandler):
 
 class ApiHandler(BaseHandler):
     def get(self):
-        args = dict((name, self.request.get(name).lower().strip()) for name in self.request.arguments() if name != 'q')        
+        args = dict(
+            (name, self.request.get(name).lower().strip()) \
+                for name in self.request.arguments() if name != 'q')        
         keywords = [x.lower() for x in self.request.get('q', '').split(',') if x]        
         results = RecordIndex.search(args=args, keywords=keywords)
         self.response.headers["Content-Type"] = "application/json"
-        self.response.out.write(simplejson.dumps([simplejson.loads(x.record) for x in results]))        
+        self.response.out.write(
+            simplejson.dumps([simplejson.loads(x.record) for x in results]))        
 
 class LoadTestData(BaseHandler):
     def post(self):
@@ -174,9 +210,59 @@ class LoadTestData(BaseHandler):
             created += 1
         self.response.out.write('Done. Created %s records' % created)
 
+class PublisherHandler(BaseHandler):
+    def get(self):        
+        response = [simplejson.loads(x.json) for x in Publisher.query().fetch()]
+        self.response.headers["Content-Type"] = "application/json"
+        self.response.out.write(simplejson.dumps(response))
+
+class PublisherFeedHandler(BaseHandler):
+    def get(self, publisher_name):
+        publisher = Publisher.get_by_urlname(publisher_name)
+        collections = Collection.all_by_publisher(publisher.key)
+        response = dict(
+            publisher=simplejson.loads(publisher.json),
+            collections=[simplejson.loads(x.json) for x in collections])
+        self.response.headers["Content-Type"] = "application/json"
+        self.response.out.write(simplejson.dumps(response))
+
+class CollectionHandler(BaseHandler):
+    def get(self, publisher_name, collection_name):
+        publisher = Publisher.get_by_urlname(publisher_name)
+        collection = Collection.get_by_urlname(collection_name, publisher.key)
+        response = dict(
+            publisher=simplejson.loads(publisher.json),
+            collection=simplejson.loads(collection.json))
+        self.response.headers["Content-Type"] = "application/json"
+        self.response.out.write(simplejson.dumps(response))
+
+class CollectionFeedHandler(BaseHandler):
+    def get(self, publisher_name, collection_name):
+        publisher = Publisher.get_by_urlname(publisher_name)
+        collection = Collection.get_by_urlname(collection_name, publisher.key)
+        logging.info(str(collection))
+        records = Record.all_by_collection(collection.key)
+        response = dict(
+            publisher=simplejson.loads(publisher.json),
+            collection=simplejson.loads(collection.json),
+            records=[simplejson.loads(x.record) for x in records])
+        self.response.headers["Content-Type"] = "application/json"
+        self.response.out.write(simplejson.dumps(response))
+
+class RecordFeedHandler(BaseHandler):
+    def get(self, publisher_name, collection_name, occurrence_id):
+        self.response.out.write(
+            'Publisher=%s, Collection=%s, Record=%s' % \
+                (publisher_name, collection_name, occurrence_id))
+
 application = webapp.WSGIApplication(
          [('/load', LoadTestData),
           ('/api/search', ApiHandler),
+          ('/publishers/?', PublisherHandler),
+          ('/publishers/([\w-]+)/?', PublisherFeedHandler),
+          ('/publishers/([\w-]+)/([\w-]+)/?', CollectionHandler),
+          ('/publishers/([\w-]+)/([\w-]+)/all', CollectionFeedHandler),
+          ('/publishers/([\w-]+)/([\w-]+)/(.*)', RecordFeedHandler),
           ],
          debug=True)
          
