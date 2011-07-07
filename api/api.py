@@ -88,14 +88,17 @@ class RecordIndex(model.Expando): # parent=Record
         return index
 
     @classmethod
-    def search(cls, args, keywords=[]):
-        gql = 'SELECT * FROM RecordIndex WHERE'
-        for k,v in args.iteritems():
-            gql = "%s %s='%s' AND " % (gql, k, v)
-        gql = gql[:-5] # Removes trailing AND
-        qry = query.parse_gql(gql)[0]
+    def search(cls, args={}, keywords=[]):
+        qry = RecordIndex.query()
+        if len(args) > 0:
+            gql = 'SELECT * FROM RecordIndex WHERE'
+            for k,v in args.iteritems():
+                gql = "%s %s='%s' AND " % (gql, k, v)
+            gql = gql[:-5] # Removes trailing AND
+            qry = query.parse_gql(gql)[0]
         for keyword in keywords:
             qry = qry.filter(RecordIndex.corpus == keyword)        
+        logging.info('QUERY='+str(qry))
         return model.get_multi([x.parent() for x in qry.fetch(keys_only=True)])
 
     @classmethod
@@ -132,13 +135,9 @@ class BaseHandler(webapp.RequestHandler):
 
 class ApiHandler(BaseHandler):
     def get(self):
-        q = self.request.get('q', None)
-        if q:
-            keywords = [x.lower() for x in q.split(',')]
-            results = RecordFullTextIndex.search(keywords)
-        else:
-            args = dict((name, self.request.get(name).lower().strip()) for name in self.request.arguments())
-            results = RecordIndex.search(args)
+        args = dict((name, self.request.get(name).lower().strip()) for name in self.request.arguments() if name != 'q')        
+        keywords = [x.lower() for x in self.request.get('q', '').split(',') if x]        
+        results = RecordIndex.search(args=args, keywords=keywords)
         self.response.headers["Content-Type"] = "application/json"
         self.response.out.write(simplejson.dumps([simplejson.loads(x.record) for x in results]))        
 
